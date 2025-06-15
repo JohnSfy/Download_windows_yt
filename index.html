@@ -297,13 +297,32 @@
           })
         });
 
-        const data = await response.json();
-        loading.style.display = 'none';
-
         if (response.ok) {
-          window.location.href = `/downloadmp3/download/${data.filename}`;
-          setTimeout(loadLibrary, 1500);
+          // Get the filename from the Content-Disposition header
+          const contentDisposition = response.headers.get('Content-Disposition');
+          const filename = contentDisposition
+            ? contentDisposition.split('filename=')[1].replace(/"/g, '')
+            : 'download.mp3';
+
+          // Create a blob from the response
+          const blob = await response.blob();
+          
+          // Create a download link
+          const downloadUrl = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = downloadUrl;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          
+          // Clean up
+          window.URL.revokeObjectURL(downloadUrl);
+          document.body.removeChild(a);
+          
+          loading.style.display = 'none';
         } else {
+          const data = await response.json();
+          loading.style.display = 'none';
           errorMsg.textContent = data.error || 'Something went wrong.';
           errorBox.style.display = 'block';
         }

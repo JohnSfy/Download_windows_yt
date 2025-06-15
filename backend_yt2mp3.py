@@ -1,10 +1,12 @@
-from flask import Flask, request, jsonify, send_from_directory, send_file, Blueprint
+from flask import Flask, request, jsonify, send_from_directory, send_file, Blueprint, Response
 import yt_dlp
 import os
 import re
 import uuid
 from datetime import timedelta
 from mutagen.mp3 import MP3
+import io
+import tempfile
 
 app = Flask(__name__)
 DOWNLOAD_DIR = "downloads"
@@ -31,103 +33,88 @@ def convert():
     if not url:
         return jsonify({"error": "No URL provided"}), 400
 
-    job_id = str(uuid.uuid4())
-    progress = {}
-
-    def progress_hook(d):
-        progress["status"] = d.get("status")
-        progress["downloaded"] = d.get("downloaded_bytes", 0)
-        progress["total"] = d.get("total_bytes", d.get("total_bytes_estimate", 0))
-        download_progress[job_id] = progress
-
     try:
-        ydl_opts = {
-            "format": "bestaudio/best",
-            "outtmpl": os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s"),
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "320" if quality == "pantas" else "192",
-            }],
-            "progress_hooks": [progress_hook],
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["android"],
-                    "player_skip": ["webpage", "configs"],
+        # Create a temporary file
+        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_file:
+            ydl_opts = {
+                "format": "bestaudio/best",
+                "outtmpl": temp_file.name,
+                "postprocessors": [{
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "320" if quality == "pantas" else "192",
+                }],
+                "extractor_args": {
+                    "youtube": {
+                        "player_client": ["android"],
+                        "player_skip": ["webpage", "configs"],
+                    }
+                },
+                "nocheckcertificate": True,
+                "ignoreerrors": True,
+                "no_warnings": True,
+                "quiet": True,
+                "http_headers": {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-us,en;q=0.5",
+                    "Sec-Fetch-Mode": "navigate",
                 }
-            },
-            "nocheckcertificate": True,
-            "ignoreerrors": True,
-            "no_warnings": True,
-            "quiet": True,
-            "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-us,en;q=0.5",
-                "Sec-Fetch-Mode": "navigate",
             }
-        }
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            result = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(result).rsplit(".", 1)[0] + ".mp3"
-
-            return jsonify({
-                "title": result.get("title", ""),
-                "filename": os.path.basename(filename),
-                "job_id": job_id
-            })
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                try:
+                    # First try to extract info without downloading
+                    info = ydl.extract_info(url, download=False)
+                    if info is None:
+                        return jsonify({"error": "Could not extract video information"}), 400
+                    
+                    # Get video title for the filename
+                    video_title = info.get('title', 'video')
+                    safe_title = "".join(c for c in video_title if c.isalnum() or c in (' ', '-', '_')).rstrip()
+                    
+                    # Download and convert to MP3
+                    ydl.download([url])
+                    
+                    # Read the temporary file
+                    with open(temp_file.name, 'rb') as f:
+                        mp3_data = f.read()
+                    
+                    # Create a response with the MP3 data
+                    response = Response(
+                        mp3_data,
+                        mimetype='audio/mpeg',
+                        headers={
+                            'Content-Disposition': f'attachment; filename="{safe_title}.mp3"',
+                            'Content-Length': str(len(mp3_data))
+                        }
+                    )
+                    
+                    return response
+                    
+                except Exception as e:
+                    print(f"Error during download: {str(e)}")
+                    return jsonify({"error": f"Download failed: {str(e)}"}), 500
+                finally:
+                    # Clean up the temporary file
+                    try:
+                        os.unlink(temp_file.name)
+                    except:
+                        pass
+                    
     except Exception as e:
+        print(f"Error in convert function: {str(e)}")
         return jsonify({"error": str(e)}), 500
-
-
-@bp.route("/download/<path:filename>")
-def download_file(filename):
-    return send_from_directory(DOWNLOAD_DIR, filename, as_attachment=True)
 
 
 @bp.route("/library")
 def library():
-    files = [
-        f for f in os.listdir(DOWNLOAD_DIR)
-        if f.lower().endswith(".mp3")
-    ]
-    
-    file_info = []
-    for file in files:
-        path = os.path.join(DOWNLOAD_DIR, file)
-        try:
-            audio = MP3(path)
-            duration = str(timedelta(seconds=int(audio.info.length)))
-            size_mb = round(os.path.getsize(path) / (1024 * 1024), 2)
-            bitrate = int(audio.info.bitrate / 1000)
-
-            file_info.append({
-                "filename": file,
-                "duration": duration,
-                "size_mb": size_mb,
-                "bitrate": f"{bitrate} kbps"
-            })
-        except Exception as e:
-            print(f"[ERROR] Failed to read metadata for {file}: {e}")
-            file_info.append({
-                "filename": file,
-                "duration": "Unknown",
-                "size_mb": "?",
-                "bitrate": "Unknown"
-            })
-
-
-    return jsonify(file_info)
+    return jsonify([])  # Return empty list since we're not storing files anymore
 
 
 @bp.route("/delete/<path:filename>", methods=["DELETE"])
 def delete_file(filename):
-    filepath = os.path.join(DOWNLOAD_DIR, filename)
-    if os.path.exists(filepath):
-        os.remove(filepath)
-        return jsonify({"message": f"{filename} deleted"}), 200
-    return jsonify({"error": "File not found"}), 404
+    return jsonify({"message": "File system storage is disabled"}), 200
 
 
 @bp.route('/images/<path:filename>')
