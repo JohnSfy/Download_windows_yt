@@ -300,9 +300,14 @@
         if (response.ok) {
           // Get the filename from the Content-Disposition header
           const contentDisposition = response.headers.get('Content-Disposition');
-          const filename = contentDisposition
-            ? contentDisposition.split('filename=')[1].replace(/"/g, '')
-            : 'download.mp3';
+          let filename = 'download.mp3'; // Default filename
+          
+          if (contentDisposition) {
+            const filenameMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/);
+            if (filenameMatch) {
+              filename = decodeURIComponent(filenameMatch[1]);
+            }
+          }
 
           // Create a blob from the response
           const blob = await response.blob();
@@ -345,36 +350,25 @@
         } else {
           libraryEmpty.style.display = 'none';
           files.forEach(file => {
-  const item = document.createElement('div');
-  item.classList.add('library-item');
+            const item = document.createElement('div');
+            item.classList.add('library-item');
 
-  const size = file.size_mb ? `${file.size_mb} MB` : '?';
-  const duration = file.duration || 'Unknown';
-  const bitrate = file.bitrate || 'Unknown';
+            item.innerHTML = `
+              <div class="library-item-icon"><i class="fas fa-music"></i></div>
+              <div class="library-item-details">
+                <div class="library-item-title">
+                  <a href="${file.url}" target="_blank" rel="noopener">${file.url}</a> - ${file.title}
+                </div>
+                <div class="library-item-meta">
+                  <span style="color:var(--light-gray);font-size:0.9em;">
+                    Added: ${new Date(file.date_added).toLocaleString()}
+                  </span>
+                </div>
+              </div>
+            `;
 
-  const encoded = encodeURIComponent(file.filename);
-
-  item.innerHTML = `
-    <div class="library-item-icon"><i class="fas fa-music"></i></div>
-    <div class="library-item-details">
-      <div class="library-item-title">${file.filename}</div>
-      <div class="library-item-meta">
-        ⏱️ ${duration} | 💾 ${size} | 🎧 ${bitrate}
-      </div>
-    </div>
-    <div class="library-item-actions">
-      <a href="/downloadmp3/download/${encoded}" class="library-item-btn download" title="Download">
-        <i class="fas fa-download"></i>
-      </a>
-      <button class="library-item-btn delete" onclick="deleteFile('${encoded}')" title="Delete">
-        <i class="fas fa-trash-alt"></i>
-      </button>
-    </div>
-  `;
-
-  libraryList.appendChild(item);
-});
-
+            libraryList.appendChild(item);
+          });
         }
       } catch (err) {
         console.error("Failed to load library:", err);
